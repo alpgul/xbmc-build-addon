@@ -1,0 +1,142 @@
+name: Build WebOS Addon
+on: 
+  workflow_dispatch:
+    inputs:
+      kodi_branch:
+        description: 'Kodi Branch to use'
+        required: true
+        type: choice
+        options:
+          - 'Omega'
+          - 'master'
+        default: 'Omega'
+      addon_repository:
+        description: 'Addon Repository (e.g., xbmc/inputstream.rtmp)'
+        required: true
+        type: string
+        default: 'xbmc/inputstream.rtmp'
+      addon_ref:
+        description: 'Addon Reference/Tag (e.g., 21.1.0-Omega)'
+        required: true
+        type: string
+        default: '21.1.0-Omega'
+      addon_name:
+        description: 'Addon Name (e.g., inputstream.rtmp)'
+        required: true
+        type: string
+        default: 'inputstream.rtmp'
+
+env:
+  TOOLCHAIN_URL: https://github.com/openlgtv/buildroot-nc4/releases/download/webos-b17b4cc/arm-webos-linux-gnueabi_sdk-buildroot.tar.gz
+  KODI_REF: ${{ github.event.inputs.kodi_branch }}
+
+jobs:
+  build-addon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          
+      - name: Install needed ubuntu depends
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential
+          sudo apt install curl
+          sudo apt-get install libssl-dev libcurl4-openssl-dev
+          
+      - name: Restore cached Kodi
+        id: cache-kodi-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{github.workspace}}/kodi
+            ${{github.workspace}}/kodi-deps
+            ${{github.workspace}}/kodi-dev
+          key: ${{ runner.os }}-kodi-${{ env.KODI_REF }}
+          
+      - name: Download and unpack toolchain
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        working-directory: ${{github.workspace}}
+        run: |
+          mkdir -p kodi-dev
+          cd kodi-dev
+          wget ${TOOLCHAIN_URL}
+          tar xzf arm-webos-linux-gnueabi_sdk-buildroot.tar.gz 
+          
+      - name: Relocate toolchain
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        working-directory: ${{github.workspace}}/kodi-dev/arm-webos-linux-gnueabi_sdk-buildroot
+        run: |
+          echo "./relocate-sdk.sh"
+          
+      - name: Checkout Kodi repo
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: xbmc/xbmc
+          ref: ${{ env.KODI_REF }}
+          path: kodi
+          fetch-depth: 1
+          
+      - name: Configure toolchain
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        working-directory: ${{github.workspace}}/kodi/tools/depends
+        run: |
+          ./bootstrap
+          ./configure --prefix=${{github.workspace}}/kodi-deps --host=arm-webos-linux-gnueabi --with-toolchain=${{github.workspace}}/kodi-dev/arm-webos-linux-gnueabi_sdk-buildroot --enable-debug=no
+          
+      - name: Build the Kodi tools
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        working-directory: ${{github.workspace}}/kodi/tools/depends
+        run: |      
+          make -j$(getconf _NPROCESSORS_ONLN)
+          
+      - name: Save Kodi
+        if: steps.cache-kodi-restore.outputs.cache-hit != 'true'
+        id: cache-kodi-save
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{github.workspace}}/kodi
+            ${{github.workspace}}/kodi-deps
+            ${{github.workspace}}/kodi-dev
+          key: ${{ runner.os }}-kodi-${{ env.KODI_REF }}
+          
+      - name: Checkout add-on repo for build
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.event.inputs.addon_name }}
+          repository: ${{ github.event.inputs.addon_repository }}
+          ref: ${{ github.event.inputs.addon_ref }}
+          fetch-depth: 1
+          
+      - name: Build Addon
+        working-directory: ${{github.workspace}}/kodi
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN) -C tools/depends/target/binary-addons ADDONS="${{ github.event.inputs.addon_name }}" ADDON_SRC_PREFIX=${{github.workspace}}
+          
+      - name: List kodi-deps directory and create addon zip
+        working-directory: ${{github.workspace}}/kodi-deps/
+        run: |
+          ls -la
+          cd arm-webos-linux-gnueabi-release/addons
+          zip -r -y ${{ github.event.inputs.addon_name }}.zip ${{ github.event.inputs.addon_name }}
+          
+      - name: Create zips directory and move addon zip
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p zips
+          mv ${{ github.workspace }}/kodi-deps/arm-webos-linux-gnueabi-release/addons/${{ github.event.inputs.addon_name }}.zip zips/
+          ls -la zips/
+          
+      - name: Commit and push addon zip to repository
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add zips/${{ github.event.inputs.addon_name }}.zip
+          git commit -m "Add built addon: ${{ github.event.inputs.addon_name }} v${{ github.event.inputs.addon_ref }} for WebOS ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))" || echo "No changes to commit"
+          git push
+          
