@@ -10,6 +10,7 @@ CONFIGURE=cp -f $(CONFIG_SUB) $(CONFIG_GUESS) .; \
                       --without-libssh2 \
                       --disable-ntlm-wb \
                       --enable-ipv6 \
+                      --enable-ares=$(PREFIX) \
                       --without-librtmp \
                       --without-libidn2 \
                       --with-ca-fallback \
@@ -49,6 +50,7 @@ $(LIBDYLIB): $(PLATFORM)
 	# install only libcurl and includes
 	$(MAKE) -C $(PLATFORM)/lib install
 	$(MAKE) -C $(PLATFORM)/include install
+	# $(MAKE) -C $(PLATFORM)/src install
 	# make sure to also install libcurl.pc, we need to do
 	# this because we are selectively installing only libcurl
 	$(MAKE) -C $(PLATFORM) install-pkgconfigDATA
